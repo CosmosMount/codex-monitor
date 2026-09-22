@@ -32,6 +32,9 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Build workspace dependencies first. The packaged desktop imports the Hub
+      # through its compiled dist entry, which is absent in a fresh checkout.
+      - run: pnpm build
       - run: pnpm --filter @codex-monitor/desktop ${{ matrix.command }}
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
