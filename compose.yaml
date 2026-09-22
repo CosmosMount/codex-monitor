@@ -1,0 +1,15 @@
+services:
+  hub:
+    build:
+      context: .
+      dockerfile: apps/hub/Dockerfile
+    environment:
+      CODEX_MONITOR_SECRET: ${CODEX_MONITOR_SECRET:?set CODEX_MONITOR_SECRET}
+    ports:
+      - "17321:17321"
+    volumes:
+      - codex-monitor-data:/data
+    restart: unless-stopped
+
+volumes:
+  codex-monitor-data:

@@ -1,0 +1,23 @@
+{
+  "name": "@codex-monitor/core",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@codex-monitor/protocol": "workspace:*",
+    "@iarna/toml": "^2.2.5",
+    "chokidar": "^4.0.3",
+    "proxy-agent": "^6.5.0"
+  }
+}
