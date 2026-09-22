@@ -2,7 +2,17 @@
   "name": "@codex-monitor/desktop",
   "version": "0.3.0",
   "description": "Cross-platform Codex usage monitor and model verification workbench.",
-  "author": "Codex Monitor contributors",
+  "author": {
+    "name": "Codex Monitor contributors",
+    "email": "cosmosmount@users.noreply.github.com"
+  },
+  "homepage": "https://github.com/CosmosMount/codex-monitor",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CosmosMount/codex-monitor.git"
+  },
+  "desktopName": "com.codexmonitor.CodexMonitor.desktop",
   "private": true,
   "type": "module",
   "main": "out/main/index.js",
@@ -39,6 +49,7 @@
   "build": {
     "appId": "com.codexmonitor.desktop",
     "productName": "Codex Monitor",
+    "executableName": "codex-monitor",
     "asar": true,
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "files": ["out/**/*", "package.json"],
@@ -47,6 +58,12 @@
     "win": { "target": ["nsis", "portable"] },
     "nsis": { "artifactName": "${productName}-Setup-${version}-windows-${arch}.${ext}" },
     "portable": { "artifactName": "${productName}-Portable-${version}-windows-${arch}.${ext}" },
-    "linux": { "target": ["AppImage", "deb"], "category": "Development" }
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Development",
+      "maintainer": "Codex Monitor contributors <cosmosmount@users.noreply.github.com>",
+      "vendor": "Codex Monitor",
+      "syncDesktopName": true
+    }
   }
 }
