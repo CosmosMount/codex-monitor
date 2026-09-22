@@ -45,6 +45,9 @@ importers:
       '@codex-monitor/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@codex-monitor/hub':
+        specifier: workspace:*
+        version: link:../hub
       '@codex-monitor/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol

@@ -1,6 +1,6 @@
 {
   "name": "@codex-monitor/desktop",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "Cross-platform Codex usage monitor and model verification workbench.",
   "author": "Codex Monitor contributors",
   "private": true,
@@ -11,10 +11,14 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
-    "dist": "pnpm build && electron-builder"
+    "dist": "pnpm build && electron-builder",
+    "dist:win": "pnpm build && electron-builder --win --x64 --arm64",
+    "dist:mac": "pnpm build && electron-builder --mac --x64 --arm64",
+    "dist:linux": "pnpm build && electron-builder --linux --x64 --arm64"
   },
   "dependencies": {
     "@codex-monitor/core": "workspace:*",
+    "@codex-monitor/hub": "workspace:*",
     "@codex-monitor/protocol": "workspace:*",
     "echarts": "^6.0.0",
     "echarts-for-react": "^3.0.5",
@@ -36,10 +40,13 @@
     "appId": "com.codexmonitor.desktop",
     "productName": "Codex Monitor",
     "asar": true,
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "files": ["out/**/*", "package.json"],
     "directories": { "output": "release" },
     "mac": { "target": ["dmg", "zip"], "category": "public.app-category.developer-tools" },
     "win": { "target": ["nsis", "portable"] },
-    "linux": { "target": ["AppImage"], "category": "Development" }
+    "nsis": { "artifactName": "${productName}-Setup-${version}-windows-${arch}.${ext}" },
+    "portable": { "artifactName": "${productName}-Portable-${version}-windows-${arch}.${ext}" },
+    "linux": { "target": ["AppImage", "deb"], "category": "Development" }
   }
 }

@@ -1,7 +1,9 @@
 import { join } from "node:path";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, net, Notification, session, shell, Tray } from "electron";
-import { aggregateFleet, CODEX_DESKTOP_USER_AGENT, CodexCollector, discoverCodexModels, testCodexModel, UsageArchive, type ModelCheckResult, type ModelCheckerState } from "@codex-monitor/core";
+import { homedir } from "node:os";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, net, Notification, safeStorage, session, shell, Tray } from "electron";
+import { aggregateFleet, CODEX_DESKTOP_USER_AGENT, CodexCollector, discoverCodexModels, discoverLanHubs, HubSyncClient, SnapshotQueue, startLanHubAdvertiser, testCodexModel, UsageArchive, type DiscoveredHub, type HubSyncStatus, type LanHubAdvertiser, type ModelCheckResult, type ModelCheckerState } from "@codex-monitor/core";
+import { createHub } from "@codex-monitor/hub";
 import type { DeviceSnapshot, FleetSnapshot } from "@codex-monitor/protocol";
 
 let mainWindow: BrowserWindow | null = null;
@@ -14,9 +16,21 @@ let modelState: ModelCheckerState | null = null;
 let modelHistory: ModelCheckResult[] = [];
 let monitorTimer: NodeJS.Timeout | null = null;
 let modelMonitors: ModelMonitor[] = [];
-const collector = new CodexCollector();
-const hubUrl = process.env.CODEX_MONITOR_HUB_URL?.replace(/\/$/u, "");
-const hubSecret = process.env.CODEX_MONITOR_SECRET;
+let collector: CodexCollector | null = null;
+let uploadQueue: SnapshotQueue | null = null;
+let syncClient: HubSyncClient | null = null;
+let hostedHub: Awaited<ReturnType<typeof createHub>> | null = null;
+let lanAdvertiser: LanHubAdvertiser | null = null;
+let discoveryTimer: NodeJS.Timeout | null = null;
+let launchAtLogin = false;
+const startHidden = process.argv.includes("--hidden");
+
+type SyncMode = "local" | "client" | "host";
+interface SyncSettings { mode: SyncMode; hubUrl: string; autoDiscover: boolean; port: number; encryptedSecret: string | null }
+interface SyncSettingsInput { mode: SyncMode; hubUrl?: string; autoDiscover?: boolean; port?: number; secret?: string }
+const DEFAULT_SYNC_SETTINGS: SyncSettings = { mode: "local", hubUrl: "", autoDiscover: true, port: 17_321, encryptedSecret: null };
+let syncSettings: SyncSettings = { ...DEFAULT_SYNC_SETTINGS };
+let syncStatus: HubSyncStatus = { phase: "idle", hubUrl: "", queued: 0, lastReceivedAt: null, error: null };
 
 interface ModelMonitor {
   id: string;
@@ -31,49 +45,183 @@ function fleet(): FleetSnapshot {
   return remoteFleet ?? aggregateFleet(latestSnapshot ? [{ snapshot: latestSnapshot, receivedAt: latestSnapshot.observedAt, stale: false }] : [], latestSnapshot?.sequence ?? 0);
 }
 
-async function uploadToHub(snapshot: DeviceSnapshot): Promise<void> {
-  if (!hubUrl || !hubSecret) return;
+async function publishSnapshot(snapshot: DeviceSnapshot): Promise<void> {
+  if (!uploadQueue) return;
+  uploadQueue.enqueue(snapshot);
+  if (syncSettings.mode === "local") {
+    uploadQueue.acknowledge(snapshot.sequence);
+    return;
+  }
+  await syncClient?.push(snapshot).catch(() => undefined);
+}
+
+function publicSettings(): object {
+  return {
+    loginItem: launchAtLogin,
+    version: app.getVersion(),
+    sync: {
+      mode: syncSettings.mode,
+      hubUrl: syncSettings.hubUrl,
+      autoDiscover: syncSettings.autoDiscover,
+      port: syncSettings.port,
+      secretConfigured: !!syncSettings.encryptedSecret || !!process.env.CODEX_MONITOR_SECRET,
+      phase: syncStatus.phase,
+      activeHubUrl: syncStatus.hubUrl,
+      connected: syncStatus.phase === "connected",
+      hostRunning: !!hostedHub,
+      queued: uploadQueue?.size() ?? 0,
+      lastReceivedAt: syncStatus.lastReceivedAt,
+      error: syncStatus.error,
+    },
+  };
+}
+
+function emitSyncState(): void {
+  mainWindow?.webContents.send("settings:sync-updated", publicSettings());
+}
+
+async function loadSyncSettings(): Promise<void> {
   try {
-    await fetch(`${hubUrl}/api/v1/ingest`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${hubSecret}`, "content-type": "application/json" },
-      body: JSON.stringify(snapshot),
-      signal: AbortSignal.timeout(10_000),
-    });
+    const stored = JSON.parse(await readFile(join(app.getPath("userData"), "sync-settings.json"), "utf8")) as Partial<SyncSettings>;
+    syncSettings = {
+      mode: stored.mode === "client" || stored.mode === "host" ? stored.mode : "local",
+      hubUrl: typeof stored.hubUrl === "string" ? normalizeHubUrl(stored.hubUrl) : "",
+      autoDiscover: stored.autoDiscover !== false,
+      port: validPort(stored.port),
+      encryptedSecret: typeof stored.encryptedSecret === "string" ? stored.encryptedSecret : null,
+    };
   } catch {
-    // The local view remains available. A later scan retries the latest snapshot.
+    const environmentUrl = process.env.CODEX_MONITOR_HUB_URL;
+    const environmentSecret = process.env.CODEX_MONITOR_SECRET;
+    syncSettings = { ...DEFAULT_SYNC_SETTINGS, mode: environmentUrl && environmentSecret ? "client" : "local", hubUrl: environmentUrl ? normalizeHubUrl(environmentUrl) : "" };
   }
 }
 
-async function subscribeToHub(): Promise<void> {
-  if (!hubUrl || !hubSecret) return;
-  while (!shuttingDown) {
-    try {
-      const response = await fetch(`${hubUrl}/api/v1/stats/stream`, {
-        headers: { authorization: `Bearer ${hubSecret}` },
-        signal: AbortSignal.timeout(3_600_000),
-      });
-      if (!response.ok || !response.body) throw new Error(`Hub stream returned HTTP ${response.status}`);
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (!shuttingDown) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const messages = buffer.split("\n\n");
-        buffer = messages.pop() ?? "";
-        for (const message of messages) {
-          const data = message.split(/\r?\n/u).find((line) => line.startsWith("data: "))?.slice(6);
-          if (!data) continue;
-          remoteFleet = JSON.parse(data) as FleetSnapshot;
-          mainWindow?.webContents.send("monitor:updated", remoteFleet);
-        }
-      }
-    } catch {
-      if (!shuttingDown) await new Promise((resolve) => setTimeout(resolve, 2_000));
-    }
+async function saveSyncSettings(input: SyncSettingsInput): Promise<void> {
+  const mode: SyncMode = input.mode === "client" || input.mode === "host" ? input.mode : "local";
+  let encryptedSecret = syncSettings.encryptedSecret;
+  if (input.secret) {
+    if (input.secret.length < 16) throw new Error("Shared secret must contain at least 16 characters");
+    if (!safeStorage.isEncryptionAvailable()) throw new Error("OS credential encryption is unavailable; configure CODEX_MONITOR_SECRET instead");
+    encryptedSecret = safeStorage.encryptString(input.secret).toString("base64");
   }
+  if (mode !== "local" && !encryptedSecret && !process.env.CODEX_MONITOR_SECRET) throw new Error("A shared secret is required");
+  syncSettings = {
+    mode,
+    hubUrl: mode === "client" ? normalizeHubUrl(input.hubUrl ?? "") : "",
+    autoDiscover: input.autoDiscover !== false,
+    port: validPort(input.port),
+    encryptedSecret,
+  };
+  const path = join(app.getPath("userData"), "sync-settings.json");
+  const temporary = `${path}.tmp`;
+  await mkdir(app.getPath("userData"), { recursive: true });
+  await writeFile(temporary, `${JSON.stringify(syncSettings, null, 2)}\n`, { mode: 0o600 });
+  await rename(temporary, path);
+  await restartSync();
+}
+
+function readSyncSecret(): string | null {
+  if (process.env.CODEX_MONITOR_SECRET) return process.env.CODEX_MONITOR_SECRET;
+  if (!syncSettings.encryptedSecret || !safeStorage.isEncryptionAvailable()) return null;
+  try { return safeStorage.decryptString(Buffer.from(syncSettings.encryptedSecret, "base64")); } catch { return null; }
+}
+
+async function restartSync(discoveredUrl?: string): Promise<void> {
+  syncClient?.stop();
+  syncClient = null;
+  remoteFleet = null;
+  if (discoveryTimer) clearTimeout(discoveryTimer);
+  discoveryTimer = null;
+  await lanAdvertiser?.close();
+  lanAdvertiser = null;
+  await hostedHub?.app.close();
+  hostedHub = null;
+  syncStatus = { phase: "idle", hubUrl: "", queued: uploadQueue?.size() ?? 0, lastReceivedAt: null, error: null };
+  if (syncSettings.mode === "local" || shuttingDown) {
+    if (syncSettings.mode === "local") uploadQueue?.clear();
+    emitSyncState();
+    return;
+  }
+  const secret = readSyncSecret();
+  if (!secret) {
+    syncStatus = { ...syncStatus, phase: "error", error: "Shared secret is unavailable from OS secure storage" };
+    emitSyncState();
+    return;
+  }
+  let hubUrl = discoveredUrl ?? syncSettings.hubUrl;
+  try {
+    if (syncSettings.mode === "host") {
+      hostedHub = await createHub({ databasePath: join(app.getPath("userData"), "hub.sqlite"), secret, logger: false });
+      await hostedHub.app.listen({ host: "0.0.0.0", port: syncSettings.port });
+      lanAdvertiser = await startLanHubAdvertiser({ port: syncSettings.port, name: `${app.getName()} on ${latestSnapshot?.device.name ?? process.platform}` });
+      hubUrl = `http://127.0.0.1:${syncSettings.port}`;
+    } else if (!hubUrl && syncSettings.autoDiscover) {
+      syncStatus = { ...syncStatus, phase: "connecting", error: null };
+      emitSyncState();
+      hubUrl = (await discoverLanHubs(1_500))[0]?.url ?? "";
+    }
+    if (!hubUrl) {
+      syncStatus = { ...syncStatus, phase: "reconnecting", error: "No Codex Monitor Hub found on the LAN" };
+      emitSyncState();
+      discoveryTimer = setTimeout(() => void restartSync(), 10_000);
+      return;
+    }
+    if (!uploadQueue) return;
+    syncClient = new HubSyncClient({
+      hubUrl,
+      secret,
+      queue: uploadQueue,
+      onFleet: (value) => {
+        remoteFleet = value;
+        mainWindow?.webContents.send("monitor:updated", value);
+      },
+      onStatus: (value) => {
+        syncStatus = value;
+        emitSyncState();
+      },
+    });
+    syncClient.start();
+    if (latestSnapshot) await syncClient.push(latestSnapshot).catch(() => undefined);
+  } catch (error) {
+    syncStatus = { ...syncStatus, phase: "error", hubUrl, error: error instanceof Error ? error.message : String(error) };
+    emitSyncState();
+    if (syncSettings.mode === "client" && syncSettings.autoDiscover) discoveryTimer = setTimeout(() => void restartSync(), 10_000);
+  }
+}
+
+function normalizeHubUrl(value: string): string {
+  const trimmed = value.trim().replace(/\/+$/u, "");
+  if (!trimmed) return "";
+  const parsed = new URL(trimmed);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("Hub URL must use http:// or https://");
+  if (parsed.username || parsed.password) throw new Error("Hub URL must not contain credentials");
+  return parsed.toString().replace(/\/$/u, "");
+}
+
+function validPort(value: unknown): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= 65_535 ? value : 17_321;
+}
+
+async function readLaunchAtLogin(): Promise<boolean> {
+  if (process.platform !== "linux") return app.getLoginItemSettings().openAtLogin;
+  try { await readFile(join(homedir(), ".config", "autostart", "codex-monitor.desktop"), "utf8"); return true; } catch { return false; }
+}
+
+async function setLaunchAtLogin(enabled: boolean): Promise<boolean> {
+  if (process.platform !== "linux") {
+    app.setLoginItemSettings({ openAtLogin: enabled, args: enabled ? ["--hidden"] : [] });
+    return app.getLoginItemSettings().openAtLogin;
+  }
+  const path = join(homedir(), ".config", "autostart", "codex-monitor.desktop");
+  if (!enabled) {
+    try { await unlink(path); } catch { /* Already disabled. */ }
+    return false;
+  }
+  await mkdir(join(homedir(), ".config", "autostart"), { recursive: true });
+  const executable = process.execPath.replace(/"/gu, "\\\"");
+  await writeFile(path, `[Desktop Entry]\nType=Application\nName=Codex Monitor\nExec="${executable}" --hidden\nTerminal=false\nX-GNOME-Autostart-enabled=true\n`, { mode: 0o600 });
+  return true;
 }
 
 function createWindow(): void {
@@ -97,6 +245,7 @@ function createWindow(): void {
   const showWindow = (): void => {
     if (shown || !mainWindow || mainWindow.isDestroyed()) return;
     shown = true;
+    if (startHidden) return;
     mainWindow.show();
   };
   mainWindow.once("ready-to-show", showWindow);
@@ -143,8 +292,10 @@ function sanitizeProxyRoute(route: string): string {
 function registerIpc(): void {
   ipcMain.handle("monitor:snapshot", () => fleet());
   ipcMain.handle("monitor:refresh", async () => {
+    if (!collector) return fleet();
     const scanned = await collector.scan();
     latestSnapshot = archive?.merge(scanned) ?? scanned;
+    await publishSnapshot(latestSnapshot);
     return fleet();
   });
   ipcMain.handle("models:state", async () => {
@@ -186,11 +337,29 @@ function registerIpc(): void {
     await executeMonitor(monitor);
     return modelMonitors;
   });
-  ipcMain.handle("settings:login-item", (_event, enabled: boolean) => {
-    app.setLoginItemSettings({ openAtLogin: enabled });
-    return app.getLoginItemSettings();
+  ipcMain.handle("settings:login-item", async (_event, enabled: boolean) => {
+    launchAtLogin = await setLaunchAtLogin(enabled);
+    return { openAtLogin: launchAtLogin };
   });
-  ipcMain.handle("settings:state", () => ({ loginItem: app.getLoginItemSettings().openAtLogin, version: app.getVersion(), hubConfigured: !!hubUrl, hubConnected: !!remoteFleet }));
+  ipcMain.handle("settings:state", () => publicSettings());
+  ipcMain.handle("settings:sync-save", async (_event, input: SyncSettingsInput) => {
+    await saveSyncSettings(input);
+    return publicSettings();
+  });
+  ipcMain.handle("settings:sync-discover", async () => await discoverLanHubs(1_800));
+  ipcMain.handle("settings:sync-connect", async (_event, hub: DiscoveredHub) => {
+    if (!hub || typeof hub.url !== "string") throw new Error("Invalid discovered hub");
+    await saveSyncSettings({ mode: "client", hubUrl: hub.url, autoDiscover: true, port: syncSettings.port });
+    return publicSettings();
+  });
+  ipcMain.handle("devices:rename", async (_event, id: string, name: string) => {
+    if (!syncClient) throw new Error("Hub is not connected");
+    await syncClient.renameDevice(id, name.trim().slice(0, 80));
+  });
+  ipcMain.handle("devices:delete", async (_event, id: string) => {
+    if (!syncClient) throw new Error("Hub is not connected");
+    await syncClient.deleteDevice(id);
+  });
 }
 
 async function runModelCheck(model: string): Promise<ModelCheckResult> {
@@ -244,6 +413,10 @@ app.whenReady().then(async () => {
   // identity at the session level avoids net.fetch rejecting forbidden headers.
   session.defaultSession.setUserAgent(CODEX_DESKTOP_USER_AGENT, "en-US,en");
   archive = new UsageArchive(join(app.getPath("userData"), "history.sqlite"));
+  uploadQueue = new SnapshotQueue(join(app.getPath("userData"), "sync.sqlite"));
+  await loadSyncSettings();
+  launchAtLogin = await readLaunchAtLogin();
+  collector = new CodexCollector({ sequence: uploadQueue.lastSequence() });
   await loadModelMonitors();
   registerIpc();
   createWindow();
@@ -251,14 +424,14 @@ app.whenReady().then(async () => {
   globalShortcut.register("CommandOrControl+Shift+U", () => mainWindow?.isVisible() ? mainWindow.hide() : mainWindow?.show());
   collector.onSnapshot((snapshot) => {
     latestSnapshot = archive?.merge(snapshot) ?? snapshot;
-    void uploadToHub(latestSnapshot);
+    void publishSnapshot(latestSnapshot);
     mainWindow?.webContents.send("monitor:updated", fleet());
   });
   await collector.watch();
   latestSnapshot = archive.merge(await collector.scan());
-  await uploadToHub(latestSnapshot);
+  await publishSnapshot(latestSnapshot);
   mainWindow?.webContents.send("monitor:updated", fleet());
-  void subscribeToHub();
+  await restartSync();
   startModelMonitorLoop();
 });
 
@@ -271,8 +444,13 @@ app.on("will-quit", () => {
   shuttingDown = true;
   globalShortcut.unregisterAll();
   if (monitorTimer) clearInterval(monitorTimer);
-  void collector.close();
+  if (discoveryTimer) clearTimeout(discoveryTimer);
+  syncClient?.stop();
+  void lanAdvertiser?.close();
+  void hostedHub?.app.close();
+  void collector?.close();
   archive?.close();
+  uploadQueue?.close();
 });
 app.on("window-all-closed", () => {
   // Keep the collector and model heartbeats alive in the system tray.

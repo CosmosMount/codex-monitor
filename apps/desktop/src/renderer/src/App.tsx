@@ -4,8 +4,8 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   Activity, ArrowDownToLine, ArrowUpFromLine, Boxes, Brain, Check, ChevronRight,
   CircleGauge, Clock3, Command, Cpu, Database, Gauge, HardDrive, Laptop, Layers3,
-  Moon, Play, RefreshCw, Search, Settings, ShieldCheck, Sparkles, Sun, Terminal,
-  Timer, Trash2, X, Zap,
+  Moon, Pencil, Play, RefreshCw, Search, Server, Settings, ShieldCheck, Sparkles, Sun, Terminal,
+  Timer, Trash2, Wifi, X, Zap,
 } from "lucide-react";
 import { emptyUsage, type DimensionUsage, type FleetSnapshot, type RangeKey, type UsageBreakdown } from "@codex-monitor/protocol";
 import type { ModelCatalogEntry, ModelCheckerState, ModelCheckResult } from "@codex-monitor/core";
@@ -15,6 +15,26 @@ type Theme = "system" | "dark" | "light";
 type Session = FleetSnapshot["sessions"][number];
 interface ModelMonitor { id: string; model: string; intervalSeconds: number; enabled: boolean; nextRunAt: string; lastResult: ModelCheckResult | null }
 interface ModelsState { catalog: (ModelCheckerState & { networkRoute?: string }) | null; history: ModelCheckResult[]; monitors: ModelMonitor[] }
+type SyncMode = "local" | "client" | "host";
+interface DiscoveredHub { id: string; name: string; url: string; address: string; port: number }
+interface DesktopSettingsState {
+  loginItem: boolean;
+  version: string;
+  sync: {
+    mode: SyncMode;
+    hubUrl: string;
+    autoDiscover: boolean;
+    port: number;
+    secretConfigured: boolean;
+    phase: "idle" | "connecting" | "connected" | "reconnecting" | "error";
+    activeHubUrl: string;
+    connected: boolean;
+    hostRunning: boolean;
+    queued: number;
+    lastReceivedAt: string | null;
+    error: string | null;
+  };
+}
 
 const NAVIGATION: Array<{ id: Page; label: string; icon: typeof Activity }> = [
   { id: "overview", label: "Overview", icon: CircleGauge },
@@ -116,7 +136,10 @@ function Sessions({ snapshot, range }: { snapshot: FleetSnapshot; range: RangeKe
 }
 
 function Devices({ snapshot }: { snapshot: FleetSnapshot }): ReactNode {
-  return <div className="stack"><div className="metric-strip"><Metric label="Registered" value={String(snapshot.devices.length)} delta="fleet devices" icon={<Laptop size={15} />} /><Metric label="Online" value={String(snapshot.devices.filter((item) => !item.stale).length)} delta="synced in 5 minutes" icon={<Activity size={15} />} /><Metric label="Files scanned" value={compact(snapshot.devices.reduce((sum, item) => sum + item.snapshot.collection.filesScanned, 0))} delta="local JSONL logs" icon={<HardDrive size={15} />} /><Metric label="Fleet total" value={compact(snapshot.periods.all.totalTokens)} delta={`${snapshot.periods.all.sessions} sessions`} icon={<Database size={15} />} /></div><Panel title="Collectors" subtitle="Per-device usage, parsing state and sync freshness"><div className="data-table horizontal"><div className="table-head device-row-rich"><span>Device</span><span>Status</span><span>Platform / agent</span><span>Last sync</span><span className="numeric">Today</span><span className="numeric">30 days</span><span className="numeric">All time</span><span className="numeric">Sessions</span><span>Collection</span></div>{snapshot.devices.map((device) => <div className="table-row device-row-rich" key={device.snapshot.device.id}><span className="primary-cell"><Laptop size={15} />{device.snapshot.device.name}</span><span><Badge tone={device.stale ? "warning" : "success"}>{device.stale ? "Stale" : "Online"}</Badge></span><span><strong className="small-strong">{device.snapshot.device.platform}</strong><small>{device.snapshot.device.agentVersion} · {device.snapshot.device.osVersion}</small></span><span>{relativeTime(device.receivedAt)}</span><span className="numeric mono">{compact(device.snapshot.periods.today.totalTokens)}</span><span className="numeric mono">{compact(device.snapshot.periods["30d"].totalTokens)}</span><span className="numeric mono">{compact(device.snapshot.periods.all.totalTokens)}</span><span className="numeric mono">{device.snapshot.periods.all.sessions}</span><span><Badge tone={device.snapshot.collection.status === "ok" ? "success" : "warning"}>{device.snapshot.collection.status} · {device.snapshot.collection.filesScanned} files</Badge></span></div>)}{snapshot.devices.length === 0 && <EmptyState icon={<Laptop />} title="No devices yet" description="The local collector will appear after its first scan." />}</div></Panel></div>;
+  const showDeviceError = (error: unknown): void => window.alert(error instanceof Error ? error.message : String(error));
+  const renameDevice = async (id: string, current: string): Promise<void> => { const name = window.prompt("Device name", current)?.trim(); if (name && name !== current) await window.codexMonitor.renameDevice(id, name).catch(showDeviceError); };
+  const deleteDevice = async (id: string, name: string): Promise<void> => { if (window.confirm(`Remove ${name} from this Hub? It can register again on its next upload.`)) await window.codexMonitor.deleteDevice(id).catch(showDeviceError); };
+  return <div className="stack"><div className="metric-strip"><Metric label="Registered" value={String(snapshot.devices.length)} delta="fleet devices" icon={<Laptop size={15} />} /><Metric label="Online" value={String(snapshot.devices.filter((item) => !item.stale).length)} delta="synced in 5 minutes" icon={<Activity size={15} />} /><Metric label="Files scanned" value={compact(snapshot.devices.reduce((sum, item) => sum + item.snapshot.collection.filesScanned, 0))} delta="local JSONL logs" icon={<HardDrive size={15} />} /><Metric label="Fleet total" value={compact(snapshot.periods.all.totalTokens)} delta={`${snapshot.periods.all.sessions} sessions`} icon={<Database size={15} />} /></div><Panel title="Collectors" subtitle="Per-device usage, parsing state and sync freshness"><div className="data-table horizontal"><div className="table-head device-row-rich"><span>Device</span><span>Status</span><span>Platform / agent</span><span>Last sync</span><span className="numeric">Today</span><span className="numeric">30 days</span><span className="numeric">All time</span><span className="numeric">Sessions</span><span>Collection</span><span>Actions</span></div>{snapshot.devices.map((device) => <div className="table-row device-row-rich" key={device.snapshot.device.id}><span className="primary-cell"><Laptop size={15} />{device.snapshot.device.name}</span><span><Badge tone={device.stale ? "warning" : "success"}>{device.stale ? "Stale" : "Online"}</Badge></span><span><strong className="small-strong">{device.snapshot.device.platform}</strong><small>{device.snapshot.device.agentVersion} · {device.snapshot.device.osVersion}</small></span><span>{relativeTime(device.receivedAt)}</span><span className="numeric mono">{compact(device.snapshot.periods.today.totalTokens)}</span><span className="numeric mono">{compact(device.snapshot.periods["30d"].totalTokens)}</span><span className="numeric mono">{compact(device.snapshot.periods.all.totalTokens)}</span><span className="numeric mono">{device.snapshot.periods.all.sessions}</span><span><Badge tone={device.snapshot.collection.status === "ok" ? "success" : "warning"}>{device.snapshot.collection.status} · {device.snapshot.collection.filesScanned} files</Badge></span><span className="device-actions"><button className="icon-button" title="Rename device" onClick={() => void renameDevice(device.snapshot.device.id, device.snapshot.device.name)}><Pencil size={12} /></button><button className="icon-button danger" title="Remove device" onClick={() => void deleteDevice(device.snapshot.device.id, device.snapshot.device.name)}><Trash2 size={12} /></button></span></div>)}{snapshot.devices.length === 0 && <EmptyState icon={<Laptop />} title="No devices yet" description="Host or join a LAN Hub from Settings to synchronize collectors." />}</div></Panel></div>;
 }
 
 function ModelsWorkbench({ usageModels }: { usageModels: string[] }): ReactNode {
@@ -131,9 +154,70 @@ function ModelsWorkbench({ usageModels }: { usageModels: string[] }): ReactNode 
 }
 
 function SettingsPage(): ReactNode {
-  const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("theme") as Theme) || "system"); const [comfortable, setComfortable] = useState(localStorage.getItem("density") === "comfortable"); const [loginItem, setLoginItem] = useState(false); const [hubState, setHubState] = useState({ configured: false, connected: false, version: "" });
-  useEffect(() => { void window.codexMonitor.getSettings().then((value) => { setLoginItem(value.loginItem); setHubState(value); }); }, []); useEffect(() => { localStorage.setItem("theme", theme); document.documentElement.dataset.theme = theme; localStorage.setItem("density", comfortable ? "comfortable" : "compact"); document.documentElement.dataset.density = comfortable ? "comfortable" : "compact"; }, [theme, comfortable]);
-  return <div className="settings-layout"><SettingsGroup title="Appearance" description="A compact desktop information system, with no widget or glass styling."><SettingRow title="Theme" description="Follow the OS or choose a fixed appearance"><Segmented value={theme} options={[{ id: "system", label: "System", icon: <Cpu size={14} /> }, { id: "dark", label: "Dark", icon: <Moon size={14} /> }, { id: "light", label: "Light", icon: <Sun size={14} /> }]} onChange={(value) => setTheme(value as Theme)} /></SettingRow><SettingRow title="Comfortable density" description="Increase table and control spacing"><Toggle checked={comfortable} onChange={setComfortable} /></SettingRow></SettingsGroup><SettingsGroup title="Desktop" description={`Codex Monitor ${hubState.version}`}><SettingRow title="Launch at login" description="Start monitoring when you sign in"><Toggle checked={loginItem} onChange={(checked) => { setLoginItem(checked); void window.codexMonitor.setLoginItem(checked); }} /></SettingRow><SettingRow title="Global shortcut" description="Show or hide the window"><kbd>Ctrl/⌘ Shift U</kbd></SettingRow></SettingsGroup><SettingsGroup title="Multi-device hub" description="Configure CODEX_MONITOR_HUB_URL and CODEX_MONITOR_SECRET before launch."><SettingRow title="Hub connection" description={hubState.configured ? "Uploading numeric snapshots and listening to fleet SSE" : "Local mode; no LAN hub configured"}><Badge tone={hubState.connected ? "success" : hubState.configured ? "warning" : "neutral"}>{hubState.connected ? "Connected" : hubState.configured ? "Reconnecting" : "Local only"}</Badge></SettingRow></SettingsGroup><SettingsGroup title="Privacy" description="Collection is local-first and content-free."><SettingRow title="Conversation content" description="Prompts, responses, source code and tool output are never collected"><Badge tone="success">Not collected</Badge></SettingRow><SettingRow title="Credentials" description="Model checks run in the isolated main process; tokens never reach the UI or Hub"><Badge tone="success">Main process only</Badge></SettingRow><SettingRow title="Cost display" description="Any cost is an API-equivalent estimate, not a subscription bill"><Badge>Estimate only</Badge></SettingRow></SettingsGroup></div>;
+  const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("theme") as Theme) || "system");
+  const [comfortable, setComfortable] = useState(localStorage.getItem("density") === "comfortable");
+  const [settingsState, setSettingsState] = useState<DesktopSettingsState | null>(null);
+  const [loginItem, setLoginItem] = useState(false);
+  const [mode, setMode] = useState<SyncMode>("local");
+  const [hubUrl, setHubUrl] = useState("");
+  const [secret, setSecret] = useState("");
+  const [port, setPort] = useState(17_321);
+  const [autoDiscover, setAutoDiscover] = useState(true);
+  const [discovered, setDiscovered] = useState<DiscoveredHub[]>([]);
+  const [syncBusy, setSyncBusy] = useState<"save" | "discover" | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+  const applyState = useCallback((value: DesktopSettingsState, initialize = false) => {
+    setSettingsState(value);
+    setLoginItem(value.loginItem);
+    if (initialize) {
+      setMode(value.sync.mode);
+      setHubUrl(value.sync.hubUrl);
+      setPort(value.sync.port);
+      setAutoDiscover(value.sync.autoDiscover);
+    }
+  }, []);
+  useEffect(() => {
+    void window.codexMonitor.getSettings().then((value) => applyState(value as DesktopSettingsState, true));
+    return window.codexMonitor.onSyncUpdated((value) => applyState(value as DesktopSettingsState));
+  }, [applyState]);
+  useEffect(() => {
+    localStorage.setItem("theme", theme); document.documentElement.dataset.theme = theme;
+    localStorage.setItem("density", comfortable ? "comfortable" : "compact"); document.documentElement.dataset.density = comfortable ? "comfortable" : "compact";
+  }, [theme, comfortable]);
+  const saveSync = async (): Promise<void> => {
+    setSyncBusy("save"); setFormError(null);
+    try {
+      const value = await window.codexMonitor.saveSyncSettings({ mode, hubUrl, autoDiscover, port, ...(secret ? { secret } : {}) });
+      applyState(value as DesktopSettingsState, true); setSecret("");
+    } catch (error) { setFormError(error instanceof Error ? error.message : String(error)); }
+    finally { setSyncBusy(null); }
+  };
+  const discover = async (): Promise<void> => {
+    setSyncBusy("discover"); setFormError(null);
+    try { setDiscovered(await window.codexMonitor.discoverHubs() as DiscoveredHub[]); }
+    catch (error) { setFormError(error instanceof Error ? error.message : String(error)); }
+    finally { setSyncBusy(null); }
+  };
+  const sync = settingsState?.sync;
+  const syncTone = sync?.connected || sync?.hostRunning ? "success" : mode === "local" ? "neutral" : "warning";
+  const syncLabel = sync?.hostRunning ? "Hosting" : sync?.connected ? "Connected" : sync?.phase === "connecting" ? "Connecting" : sync?.phase === "reconnecting" ? "Discovering" : sync?.phase === "error" ? "Needs attention" : "Local only";
+  return <div className="settings-layout">
+    <SettingsGroup title="Appearance" description="A compact desktop information system, with no widget or glass styling."><SettingRow title="Theme" description="Follow the OS or choose a fixed appearance"><Segmented value={theme} options={[{ id: "system", label: "System", icon: <Cpu size={14} /> }, { id: "dark", label: "Dark", icon: <Moon size={14} /> }, { id: "light", label: "Light", icon: <Sun size={14} /> }]} onChange={(value) => setTheme(value as Theme)} /></SettingRow><SettingRow title="Comfortable density" description="Increase table and control spacing"><Toggle checked={comfortable} onChange={setComfortable} /></SettingRow></SettingsGroup>
+    <SettingsGroup title="Desktop" description={`Codex Monitor ${settingsState?.version ?? ""}`}><SettingRow title="Launch at login" description="Start monitoring when you sign in"><Toggle checked={loginItem} onChange={(checked) => { setLoginItem(checked); void window.codexMonitor.setLoginItem(checked); }} /></SettingRow><SettingRow title="Global shortcut" description="Show or hide the window"><kbd>Ctrl/⌘ Shift U</kbd></SettingRow></SettingsGroup>
+    <SettingsGroup title="LAN synchronization" description="Host a private Hub on this device or join one from Windows, macOS, or Linux.">
+      <SettingRow title="Connection" description={sync?.activeHubUrl || (mode === "local" ? "Only this device" : "Waiting for a Hub")}><span className="sync-status"><Badge tone={syncTone}>{syncLabel}</Badge>{!!sync?.queued && <small>{sync.queued} queued</small>}</span></SettingRow>
+      <div className="sync-editor">
+        <div className="sync-mode-grid"><button className={mode === "local" ? "sync-mode active" : "sync-mode"} onClick={() => setMode("local")}><Laptop size={16} /><span><strong>Local only</strong><small>No network synchronization</small></span></button><button className={mode === "client" ? "sync-mode active" : "sync-mode"} onClick={() => setMode("client")}><Wifi size={16} /><span><strong>Join a Hub</strong><small>Sync with another device</small></span></button><button className={mode === "host" ? "sync-mode active" : "sync-mode"} onClick={() => setMode("host")}><Server size={16} /><span><strong>Host a Hub</strong><small>Make this the LAN coordinator</small></span></button></div>
+        {mode === "client" && <><label className="field-label">Hub URL<input className="text-input" value={hubUrl} onChange={(event) => setHubUrl(event.target.value)} placeholder="http://192.168.1.10:17321" /></label><div className="sync-inline"><span><strong>Automatic LAN discovery</strong><small>Find Hub broadcasts without entering an IP address</small></span><Toggle checked={autoDiscover} onChange={setAutoDiscover} /></div></>}
+        {mode === "host" && <label className="field-label">Listening port<input className="text-input" type="number" min={1} max={65535} value={port} onChange={(event) => setPort(Number(event.target.value))} /></label>}
+        {mode !== "local" && <label className="field-label">Shared secret<input className="text-input mono" type="password" value={secret} onChange={(event) => setSecret(event.target.value)} placeholder={sync?.secretConfigured ? "Stored securely · leave blank to keep" : "At least 16 characters on every device"} /></label>}
+        {formError && <div className="sync-error">{formError}</div>}{sync?.error && !formError && <div className="sync-error">{sync.error}</div>}
+        {mode === "client" && discovered.length > 0 && <div className="discovered-hubs">{discovered.map((hub) => <button key={hub.id} onClick={() => { setHubUrl(hub.url); setMode("client"); }}><Server size={14} /><span><strong>{hub.name}</strong><small>{hub.url}</small></span><Badge>Use</Badge></button>)}</div>}
+        <div className="sync-actions">{mode === "client" && <button className="secondary-button" disabled={syncBusy !== null} onClick={() => void discover()}>{syncBusy === "discover" ? <RefreshCw size={13} className="spin" /> : <Wifi size={13} />}Discover LAN</button>}<button className="primary-button" disabled={syncBusy !== null} onClick={() => void saveSync()}>{syncBusy === "save" ? <RefreshCw size={13} className="spin" /> : <Check size={13} />}Apply</button></div>
+      </div>
+    </SettingsGroup>
+    <SettingsGroup title="Privacy" description="Collection is local-first and content-free."><SettingRow title="Conversation content" description="Prompts, responses, source code and tool output are never collected"><Badge tone="success">Not collected</Badge></SettingRow><SettingRow title="Shared secret" description="Encrypted with the operating system credential store and never synchronized"><Badge tone="success">Device protected</Badge></SettingRow><SettingRow title="Cost display" description="Any cost is an API-equivalent estimate, not a subscription bill"><Badge>Estimate only</Badge></SettingRow></SettingsGroup>
+  </div>;
 }
 
 function TrendChart({ snapshot, range, tall = false }: { snapshot: FleetSnapshot; range: RangeKey; tall?: boolean }): ReactNode { const rows = dailyForRange(snapshot, range); const option = { animationDuration: 180, grid: { left: 8, right: 12, top: 28, bottom: 8, containLabel: true }, tooltip: { trigger: "axis", backgroundColor: "#1d1f25", borderColor: "#343741", textStyle: { color: "#f5f5f7" } }, legend: { top: 2, right: 8, textStyle: { color: "#777b87", fontSize: 10 }, itemWidth: 12, itemHeight: 3 }, xAxis: { type: "category", data: rows.map((item) => item.date.slice(5)), boundaryGap: false, axisLine: { lineStyle: { color: "#343741" } }, axisLabel: { color: "#777b87", fontSize: 10 } }, yAxis: { type: "value", axisLabel: { formatter: compact, color: "#777b87", fontSize: 10 }, splitLine: { lineStyle: { color: "#25272e" } } }, series: [{ name: "Fresh input", type: "line", stack: "tokens", data: rows.map((item) => Math.max(0, item.usage.inputTokens - item.usage.cachedInputTokens)), smooth: .2, symbol: "none", lineStyle: { color: "#8a9bff", width: 1.5 }, areaStyle: { color: "rgba(138,155,255,.16)" } }, { name: "Cached", type: "line", stack: "tokens", data: rows.map((item) => item.usage.cachedInputTokens), smooth: .2, symbol: "none", lineStyle: { color: "#68b7a1", width: 1.5 }, areaStyle: { color: "rgba(104,183,161,.13)" } }, { name: "Output", type: "line", stack: "tokens", data: rows.map((item) => item.usage.outputTokens), smooth: .2, symbol: "none", lineStyle: { color: "#d2a660", width: 1.5 }, areaStyle: { color: "rgba(210,166,96,.12)" } }] }; return rows.length ? <ReactECharts option={option} style={{ height: tall ? 340 : 260 }} /> : <EmptyState icon={<Activity />} title="No usage recorded" description="Start a Codex session and usage will appear automatically." />; }
