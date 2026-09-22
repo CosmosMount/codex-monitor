@@ -1,6 +1,6 @@
 {
   "name": "codex-monitor",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Local-first multi-device Codex usage monitor and model verification workbench.",
   "packageManager": "pnpm@11.19.0",

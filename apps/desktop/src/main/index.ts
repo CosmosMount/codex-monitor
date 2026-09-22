@@ -22,6 +22,7 @@ let syncClient: HubSyncClient | null = null;
 let hostedHub: Awaited<ReturnType<typeof createHub>> | null = null;
 let lanAdvertiser: LanHubAdvertiser | null = null;
 let discoveryTimer: NodeJS.Timeout | null = null;
+let syncRestartGeneration = 0;
 let launchAtLogin = false;
 const startHidden = process.argv.includes("--hidden");
 
@@ -127,20 +128,33 @@ function readSyncSecret(): string | null {
   try { return safeStorage.decryptString(Buffer.from(syncSettings.encryptedSecret, "base64")); } catch { return null; }
 }
 
-async function restartSync(discoveredUrl?: string): Promise<void> {
-  syncClient?.stop();
+async function stopSyncResources(): Promise<void> {
+  const previousClient = syncClient;
+  const previousAdvertiser = lanAdvertiser;
+  const previousHub = hostedHub;
   syncClient = null;
-  remoteFleet = null;
+  lanAdvertiser = null;
+  hostedHub = null;
   if (discoveryTimer) clearTimeout(discoveryTimer);
   discoveryTimer = null;
-  await lanAdvertiser?.close();
-  lanAdvertiser = null;
-  await hostedHub?.app.close();
-  hostedHub = null;
+  previousClient?.stop();
+  const closing: Promise<unknown>[] = [];
+  if (previousAdvertiser) closing.push(previousAdvertiser.close());
+  if (previousHub) closing.push(previousHub.app.close());
+  await Promise.allSettled(closing);
+}
+
+async function restartSync(discoveredUrl?: string): Promise<void> {
+  const generation = ++syncRestartGeneration;
+  const settings = { ...syncSettings };
+  const stopping = stopSyncResources();
+  remoteFleet = null;
   syncStatus = { phase: "idle", hubUrl: "", queued: uploadQueue?.size() ?? 0, lastReceivedAt: null, error: null };
-  if (syncSettings.mode === "local" || shuttingDown) {
-    if (syncSettings.mode === "local") uploadQueue?.clear();
-    emitSyncState();
+  emitSyncState();
+  await stopping;
+  if (generation !== syncRestartGeneration) return;
+  if (settings.mode === "local" || shuttingDown) {
+    if (settings.mode === "local") uploadQueue?.clear();
     return;
   }
   const secret = readSyncSecret();
@@ -149,44 +163,71 @@ async function restartSync(discoveredUrl?: string): Promise<void> {
     emitSyncState();
     return;
   }
-  let hubUrl = discoveredUrl ?? syncSettings.hubUrl;
+  let hubUrl = discoveredUrl ?? settings.hubUrl;
+  let pendingHub: Awaited<ReturnType<typeof createHub>> | null = null;
+  let pendingAdvertiser: LanHubAdvertiser | null = null;
   try {
-    if (syncSettings.mode === "host") {
-      hostedHub = await createHub({ databasePath: join(app.getPath("userData"), "hub.sqlite"), secret, logger: false });
-      await hostedHub.app.listen({ host: "0.0.0.0", port: syncSettings.port });
-      lanAdvertiser = await startLanHubAdvertiser({ port: syncSettings.port, name: `${app.getName()} on ${latestSnapshot?.device.name ?? process.platform}` });
-      hubUrl = `http://127.0.0.1:${syncSettings.port}`;
-    } else if (!hubUrl && syncSettings.autoDiscover) {
+    if (settings.mode === "host") {
+      pendingHub = await createHub({ databasePath: join(app.getPath("userData"), "hub.sqlite"), secret, logger: false });
+      await pendingHub.app.listen({ host: "0.0.0.0", port: settings.port });
+      if (generation !== syncRestartGeneration) {
+        await pendingHub.app.close();
+        return;
+      }
+      pendingAdvertiser = await startLanHubAdvertiser({ port: settings.port, name: `${app.getName()} on ${latestSnapshot?.device.name ?? process.platform}` });
+      if (generation !== syncRestartGeneration) {
+        await Promise.allSettled([pendingAdvertiser.close(), pendingHub.app.close()]);
+        return;
+      }
+      hostedHub = pendingHub;
+      lanAdvertiser = pendingAdvertiser;
+      pendingHub = null;
+      pendingAdvertiser = null;
+      hubUrl = `http://127.0.0.1:${settings.port}`;
+    } else if (!hubUrl && settings.autoDiscover) {
       syncStatus = { ...syncStatus, phase: "connecting", error: null };
       emitSyncState();
       hubUrl = (await discoverLanHubs(1_500))[0]?.url ?? "";
     }
+    if (generation !== syncRestartGeneration) return;
     if (!hubUrl) {
       syncStatus = { ...syncStatus, phase: "reconnecting", error: "No Codex Monitor Hub found on the LAN" };
       emitSyncState();
-      discoveryTimer = setTimeout(() => void restartSync(), 10_000);
+      discoveryTimer = setTimeout(() => { if (generation === syncRestartGeneration) void restartSync(); }, 10_000);
       return;
     }
     if (!uploadQueue) return;
-    syncClient = new HubSyncClient({
+    const nextClient = new HubSyncClient({
       hubUrl,
       secret,
       queue: uploadQueue,
       onFleet: (value) => {
+        if (generation !== syncRestartGeneration) return;
         remoteFleet = value;
         mainWindow?.webContents.send("monitor:updated", value);
       },
       onStatus: (value) => {
+        if (generation !== syncRestartGeneration) return;
         syncStatus = value;
         emitSyncState();
       },
     });
-    syncClient.start();
-    if (latestSnapshot) await syncClient.push(latestSnapshot).catch(() => undefined);
+    if (generation !== syncRestartGeneration) {
+      nextClient.stop();
+      return;
+    }
+    syncClient = nextClient;
+    nextClient.start();
+    if (latestSnapshot) await nextClient.push(latestSnapshot).catch(() => undefined);
   } catch (error) {
+    await Promise.allSettled([
+      ...(pendingAdvertiser ? [pendingAdvertiser.close()] : []),
+      ...(pendingHub ? [pendingHub.app.close()] : []),
+    ]);
+    if (generation !== syncRestartGeneration) return;
     syncStatus = { ...syncStatus, phase: "error", hubUrl, error: error instanceof Error ? error.message : String(error) };
     emitSyncState();
-    if (syncSettings.mode === "client" && syncSettings.autoDiscover) discoveryTimer = setTimeout(() => void restartSync(), 10_000);
+    if (settings.mode === "client" && settings.autoDiscover) discoveryTimer = setTimeout(() => { if (generation === syncRestartGeneration) void restartSync(); }, 10_000);
   }
 }
 

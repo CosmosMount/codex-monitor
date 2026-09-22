@@ -184,10 +184,10 @@ function SettingsPage(): ReactNode {
     localStorage.setItem("theme", theme); document.documentElement.dataset.theme = theme;
     localStorage.setItem("density", comfortable ? "comfortable" : "compact"); document.documentElement.dataset.density = comfortable ? "comfortable" : "compact";
   }, [theme, comfortable]);
-  const saveSync = async (): Promise<void> => {
+  const saveSync = async (requestedMode: SyncMode = mode): Promise<void> => {
     setSyncBusy("save"); setFormError(null);
     try {
-      const value = await window.codexMonitor.saveSyncSettings({ mode, hubUrl, autoDiscover, port, ...(secret ? { secret } : {}) });
+      const value = await window.codexMonitor.saveSyncSettings({ mode: requestedMode, hubUrl, autoDiscover, port, ...(secret ? { secret } : {}) });
       applyState(value as DesktopSettingsState, true); setSecret("");
     } catch (error) { setFormError(error instanceof Error ? error.message : String(error)); }
     finally { setSyncBusy(null); }
@@ -213,7 +213,7 @@ function SettingsPage(): ReactNode {
         {mode !== "local" && <label className="field-label">Shared secret<input className="text-input mono" type="password" value={secret} onChange={(event) => setSecret(event.target.value)} placeholder={sync?.secretConfigured ? "Stored securely · leave blank to keep" : "At least 16 characters on every device"} /></label>}
         {formError && <div className="sync-error">{formError}</div>}{sync?.error && !formError && <div className="sync-error">{sync.error}</div>}
         {mode === "client" && discovered.length > 0 && <div className="discovered-hubs">{discovered.map((hub) => <button key={hub.id} onClick={() => { setHubUrl(hub.url); setMode("client"); }}><Server size={14} /><span><strong>{hub.name}</strong><small>{hub.url}</small></span><Badge>Use</Badge></button>)}</div>}
-        <div className="sync-actions">{mode === "client" && <button className="secondary-button" disabled={syncBusy !== null} onClick={() => void discover()}>{syncBusy === "discover" ? <RefreshCw size={13} className="spin" /> : <Wifi size={13} />}Discover LAN</button>}<button className="primary-button" disabled={syncBusy !== null} onClick={() => void saveSync()}>{syncBusy === "save" ? <RefreshCw size={13} className="spin" /> : <Check size={13} />}Apply</button></div>
+        <div className="sync-actions">{sync?.hostRunning && <button className="secondary-button danger" disabled={syncBusy !== null} onClick={() => { setMode("local"); void saveSync("local"); }}>{syncBusy === "save" ? <RefreshCw size={13} className="spin" /> : <X size={13} />}Stop Hub</button>}{mode === "client" && <button className="secondary-button" disabled={syncBusy !== null} onClick={() => void discover()}>{syncBusy === "discover" ? <RefreshCw size={13} className="spin" /> : <Wifi size={13} />}Discover LAN</button>}<button className="primary-button" disabled={syncBusy !== null} onClick={() => void saveSync()}>{syncBusy === "save" ? <RefreshCw size={13} className="spin" /> : <Check size={13} />}Apply</button></div>
       </div>
     </SettingsGroup>
     <SettingsGroup title="Privacy" description="Collection is local-first and content-free."><SettingRow title="Conversation content" description="Prompts, responses, source code and tool output are never collected"><Badge tone="success">Not collected</Badge></SettingRow><SettingRow title="Shared secret" description="Encrypted with the operating system credential store and never synchronized"><Badge tone="success">Device protected</Badge></SettingRow><SettingRow title="Cost display" description="Any cost is an API-equivalent estimate, not a subscription bill"><Badge>Estimate only</Badge></SettingRow></SettingsGroup>
