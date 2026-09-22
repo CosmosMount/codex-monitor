@@ -1,8 +1,14 @@
 {
   "name": "@codex-monitor/hub",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "type": "module",
-  "main": "dist/server.js",
+  "main": "dist/app.js",
+  "exports": {
+    ".": {
+      "types": "./src/app.ts",
+      "default": "./dist/app.js"
+    }
+  },
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",

@@ -7,11 +7,12 @@ export interface HubOptions {
   databasePath: string;
   secret: string;
   allowOrigin?: string;
+  logger?: boolean;
 }
 
 export async function createHub(options: HubOptions): Promise<{ app: FastifyInstance; store: HubStore }> {
   if (options.secret.length < 16) throw new Error("CODEX_MONITOR_SECRET must contain at least 16 characters");
-  const app = Fastify({ logger: true, bodyLimit: 1_048_576 });
+  const app = Fastify({ logger: options.logger ?? true, bodyLimit: 8_388_608 });
   const store = new HubStore(options.databasePath);
   const streams = new Set<NodeJS.WritableStream>();
   await app.register(cors, { origin: options.allowOrigin ?? false });
@@ -50,7 +51,7 @@ export async function createHub(options: HubOptions): Promise<{ app: FastifyInst
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
     });
-    response.write(`event: snapshot\ndata: ${JSON.stringify(store.fleet())}\n\n`);
+    response.write(`id: ${store.revision()}\nevent: snapshot\ndata: ${JSON.stringify(store.fleet())}\n\n`);
     streams.add(response);
     const heartbeat = setInterval(() => response.write(": heartbeat\n\n"), 30_000);
     request.raw.once("close", () => {
@@ -80,6 +81,7 @@ export async function createHub(options: HubOptions): Promise<{ app: FastifyInst
 }
 
 function broadcast(streams: Set<NodeJS.WritableStream>, event: string, payload: unknown): void {
-  const message = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
+  const revision = typeof payload === "object" && payload && "revision" in payload ? String((payload as { revision: unknown }).revision) : "";
+  const message = `${revision ? `id: ${revision}\n` : ""}event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
   for (const stream of streams) stream.write(message);
 }

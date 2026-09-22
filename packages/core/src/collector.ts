@@ -180,7 +180,7 @@ function buildSnapshot(sessions: ParsedSession[], options: SnapshotBuildOptions)
       name: options.deviceName ?? hostname(),
       platform: `${platform()}-${process.arch}`,
       osVersion: release(),
-      agentVersion: "0.1.0",
+      agentVersion: "0.3.0",
     },
     periods,
     daily,

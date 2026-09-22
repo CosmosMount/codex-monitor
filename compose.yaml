@@ -7,6 +7,7 @@ services:
       CODEX_MONITOR_SECRET: ${CODEX_MONITOR_SECRET:?set CODEX_MONITOR_SECRET}
     ports:
       - "17321:17321"
+      - "17322:17322/udp"
     volumes:
       - codex-monitor-data:/data
     restart: unless-stopped
