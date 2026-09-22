@@ -1,0 +1,17 @@
+node_modules/
+.pnpm-store/
+dist/
+out/
+release/
+.vite/
+coverage/
+*.log
+electron-*.log
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.env
+.DS_Store
+Thumbs.db
+.reference/
+codex-model-tester-reference.zip
