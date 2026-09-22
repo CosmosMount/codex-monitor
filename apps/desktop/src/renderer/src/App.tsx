@@ -220,7 +220,76 @@ function SettingsPage(): ReactNode {
   </div>;
 }
 
-function TrendChart({ snapshot, range, tall = false }: { snapshot: FleetSnapshot; range: RangeKey; tall?: boolean }): ReactNode { const rows = dailyForRange(snapshot, range); const option = { animationDuration: 180, grid: { left: 8, right: 12, top: 28, bottom: 8, containLabel: true }, tooltip: { trigger: "axis", backgroundColor: "#1d1f25", borderColor: "#343741", textStyle: { color: "#f5f5f7" } }, legend: { top: 2, right: 8, textStyle: { color: "#777b87", fontSize: 10 }, itemWidth: 12, itemHeight: 3 }, xAxis: { type: "category", data: rows.map((item) => item.date.slice(5)), boundaryGap: false, axisLine: { lineStyle: { color: "#343741" } }, axisLabel: { color: "#777b87", fontSize: 10 } }, yAxis: { type: "value", axisLabel: { formatter: compact, color: "#777b87", fontSize: 10 }, splitLine: { lineStyle: { color: "#25272e" } } }, series: [{ name: "Fresh input", type: "line", stack: "tokens", data: rows.map((item) => Math.max(0, item.usage.inputTokens - item.usage.cachedInputTokens)), smooth: .2, symbol: "none", lineStyle: { color: "#8a9bff", width: 1.5 }, areaStyle: { color: "rgba(138,155,255,.16)" } }, { name: "Cached", type: "line", stack: "tokens", data: rows.map((item) => item.usage.cachedInputTokens), smooth: .2, symbol: "none", lineStyle: { color: "#68b7a1", width: 1.5 }, areaStyle: { color: "rgba(104,183,161,.13)" } }, { name: "Output", type: "line", stack: "tokens", data: rows.map((item) => item.usage.outputTokens), smooth: .2, symbol: "none", lineStyle: { color: "#d2a660", width: 1.5 }, areaStyle: { color: "rgba(210,166,96,.12)" } }] }; return rows.length ? <ReactECharts option={option} style={{ height: tall ? 340 : 260 }} /> : <EmptyState icon={<Activity />} title="No usage recorded" description="Start a Codex session and usage will appear automatically." />; }
+function TrendChart({ snapshot, range, tall = false }: { snapshot: FleetSnapshot; range: RangeKey; tall?: boolean }): ReactNode {
+  const rows = dailyForRange(snapshot, range);
+  const fontFamily = getComputedStyle(document.documentElement).fontFamily;
+  const option = {
+    animationDuration: 180,
+    textStyle: { fontFamily },
+    grid: { left: 8, right: 12, top: 28, bottom: 8, containLabel: true },
+    tooltip: {
+      trigger: "axis",
+      backgroundColor: "#1d1f25",
+      borderColor: "#343741",
+      textStyle: { color: "#f5f5f7", fontFamily }
+    },
+    legend: {
+      top: 2,
+      right: 8,
+      textStyle: { color: "#777b87", fontSize: 10, fontFamily },
+      itemWidth: 12,
+      itemHeight: 3
+    },
+    xAxis: {
+      type: "category",
+      data: rows.map((item) => item.date.slice(5)),
+      boundaryGap: false,
+      axisLine: { lineStyle: { color: "#343741" } },
+      axisLabel: { color: "#777b87", fontSize: 10, fontFamily }
+    },
+    yAxis: {
+      type: "value",
+      axisLabel: { formatter: compact, color: "#777b87", fontSize: 10, fontFamily },
+      splitLine: { lineStyle: { color: "#25272e" } }
+    },
+    series: [
+      {
+        name: "Fresh input",
+        type: "line",
+        stack: "tokens",
+        data: rows.map((item) => Math.max(0, item.usage.inputTokens - item.usage.cachedInputTokens)),
+        smooth: .2,
+        symbol: "none",
+        lineStyle: { color: "#8a9bff", width: 1.5 },
+        areaStyle: { color: "rgba(138,155,255,.16)" }
+      },
+      {
+        name: "Cached",
+        type: "line",
+        stack: "tokens",
+        data: rows.map((item) => item.usage.cachedInputTokens),
+        smooth: .2,
+        symbol: "none",
+        lineStyle: { color: "#68b7a1", width: 1.5 },
+        areaStyle: { color: "rgba(104,183,161,.13)" }
+      },
+      {
+        name: "Output",
+        type: "line",
+        stack: "tokens",
+        data: rows.map((item) => item.usage.outputTokens),
+        smooth: .2,
+        symbol: "none",
+        lineStyle: { color: "#d2a660", width: 1.5 },
+        areaStyle: { color: "rgba(210,166,96,.12)" }
+      }
+    ]
+  };
+
+  return rows.length
+    ? <ReactECharts option={option} style={{ height: tall ? 340 : 260 }} />
+    : <EmptyState icon={<Activity />} title="No usage recorded" description="Start a Codex session and usage will appear automatically." />;
+}
 
 function SessionTable({ sessions, compactMode = false, detailed = false, onSelect }: { sessions: Session[]; compactMode?: boolean; detailed?: boolean; onSelect?: (id: string) => void }): ReactNode {
   if (detailed) return <div className="data-table horizontal"><div className="table-head session-row-rich"><span>Project / session</span><span>Model</span><span>Device</span><span>Last active</span><span className="numeric">Input</span><span className="numeric">Cached</span><span className="numeric">Output</span><span className="numeric">Reasoning</span><span className="numeric">Context</span><span className="numeric">Turns</span><span className="numeric">Total</span></div>{sessions.map((session) => <button className="table-row session-row-rich clickable" key={`${session.deviceId}:${session.id}`} onClick={() => onSelect?.(session.id)}><span><strong className="small-strong">{session.projectLabel ?? "Unassigned"}</strong><small className="mono">{session.id.slice(0, 12)}</small></span><span><Badge>{session.model}</Badge></span><span>{session.deviceName}</span><span>{relativeTime(session.lastUsedAt)}</span><span className="numeric mono">{compact(session.usage.inputTokens)}</span><span className="numeric mono">{compact(session.usage.cachedInputTokens)}</span><span className="numeric mono">{compact(session.usage.outputTokens)}</span><span className="numeric mono">{compact(session.usage.reasoningTokens)}</span><span className="numeric mono">{session.contextWindow ? `${Math.round(contextRatio(session) * 100)}%` : "—"}</span><span className="numeric mono">{session.turns}</span><span className="numeric mono">{compact(session.usage.totalTokens)}</span></button>)}{!sessions.length && <EmptyState icon={<Terminal />} title="No sessions found" description="Adjust the range or filters, or start a new Codex session." />}</div>;

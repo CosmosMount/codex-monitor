@@ -266,6 +266,7 @@ async function setLaunchAtLogin(enabled: boolean): Promise<boolean> {
 }
 
 function createWindow(): void {
+  const icon = loadApplicationIcon();
   mainWindow = new BrowserWindow({
     width: 1360,
     height: 860,
@@ -273,6 +274,7 @@ function createWindow(): void {
     minHeight: 680,
     backgroundColor: "#111216",
     title: "Codex Monitor",
+    ...(process.platform === "darwin" || icon.isEmpty() ? {} : { icon }),
     show: false,
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     webPreferences: {
@@ -305,11 +307,16 @@ function createWindow(): void {
   else void mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
 }
 
+function loadApplicationIcon(): Electron.NativeImage {
+  const path = app.isPackaged ? join(process.resourcesPath, "icon.png") : join(app.getAppPath(), "build", "icon.png");
+  return nativeImage.createFromPath(path);
+}
+
 function createTray(): void {
-  const traySvg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><rect x="2" y="2" width="28" height="28" rx="7" fill="#8492ff"/><path d="M20.8 10.2a8 8 0 1 0 0 11.6l-2.3-2.3a4.8 4.8 0 1 1 0-7z" fill="#fff"/><circle cx="22.5" cy="16" r="2.2" fill="#fff"/></svg>`;
-  let icon = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(traySvg).toString("base64")}`);
-  if (icon.isEmpty()) icon = nativeImage.createFromDataURL("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAMUlEQVR42mNgGAWjYBSMglEwCkbB////MzD8Z2BgYPjPwMDwH4qDBlD8j4GBgQEA3X8H+g/WiaAAAAAASUVORK5CYII=");
-  tray = new Tray(icon.resize({ width: 16, height: 16, quality: "best" }));
+  const source = loadApplicationIcon();
+  if (source.isEmpty()) throw new Error("Application icon resource is missing");
+  const size = process.platform === "linux" ? 24 : 16;
+  tray = new Tray(source.resize({ width: size, height: size, quality: "best" }));
   tray.setToolTip("Codex Monitor");
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: "Open Codex Monitor", click: () => mainWindow?.show() },
@@ -449,6 +456,7 @@ function startModelMonitorLoop(): void {
 }
 
 app.whenReady().then(async () => {
+  if (process.platform === "win32") app.setAppUserModelId("com.codexmonitor.desktop");
   await session.defaultSession.setProxy({ mode: "system" });
   // Chromium owns Sec-Fetch, Client Hints and compression headers. Setting the
   // identity at the session level avoids net.fetch rejecting forbidden headers.
