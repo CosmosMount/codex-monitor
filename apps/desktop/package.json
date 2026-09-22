@@ -1,6 +1,6 @@
 {
   "name": "@codex-monitor/desktop",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Cross-platform Codex usage monitor and model verification workbench.",
   "author": {
     "name": "Codex Monitor contributors",
@@ -18,7 +18,6 @@
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
-    "icons": "electron scripts/generate-icons.mjs",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
@@ -56,14 +55,14 @@
     "files": ["out/**/*", "package.json"],
     "extraResources": [{ "from": "build/icon.png", "to": "icon.png" }],
     "directories": { "output": "release" },
-    "mac": { "target": ["dmg", "zip"], "category": "public.app-category.developer-tools", "icon": "build/icon.svg" },
-    "win": { "target": ["nsis", "portable"], "icon": "build/icon.svg" },
+    "mac": { "target": ["dmg", "zip"], "category": "public.app-category.developer-tools", "icon": "build/icon.png" },
+    "win": { "target": ["nsis", "portable"], "icon": "build/icon.png" },
     "nsis": { "artifactName": "${productName}-Setup-${version}-windows-${arch}.${ext}" },
     "portable": { "artifactName": "${productName}-Portable-${version}-windows-${arch}.${ext}" },
     "linux": {
       "target": ["AppImage", "deb"],
       "category": "Development",
-      "icon": "build/icon.svg",
+      "icon": "build/icon.png",
       "maintainer": "Codex Monitor contributors <cosmosmount@users.noreply.github.com>",
       "vendor": "Codex Monitor",
       "syncDesktopName": true
