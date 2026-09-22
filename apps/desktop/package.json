@@ -22,9 +22,9 @@
     "preview": "electron-vite preview",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "dist": "pnpm build && electron-builder",
-    "dist:win": "pnpm build && electron-builder --win --x64 --arm64",
-    "dist:mac": "pnpm build && electron-builder --mac --x64 --arm64",
-    "dist:linux": "pnpm build && electron-builder --linux --x64 --arm64"
+    "dist:win": "pnpm build && electron-builder --win --x64 --arm64 --publish never",
+    "dist:mac": "pnpm build && electron-builder --mac --x64 --arm64 --publish never",
+    "dist:linux": "pnpm build && electron-builder --linux --x64 --arm64 --publish never"
   },
   "dependencies": {
     "@codex-monitor/core": "workspace:*",
