@@ -18,6 +18,7 @@ import {
   type UsageVector,
 } from "@codex-monitor/protocol";
 import { parseCodexSession, type ParsedSession } from "./codex-parser.js";
+import { estimateApiCostUsd } from "./pricing.js";
 
 export interface CollectorOptions {
   codexHome?: string;
@@ -131,24 +132,56 @@ interface SnapshotBuildOptions {
 
 function buildSnapshot(sessions: ParsedSession[], options: SnapshotBuildOptions): DeviceSnapshot {
   const now = new Date(options.observedAt);
+  const weeklyStart = dateKey(startForRange("week", now));
   const dailyMap = new Map<string, UsageBreakdown>();
   const modelMap = new Map<string, UsageBreakdown>();
   const projectMap = new Map<string, { label: string; usage: UsageBreakdown }>();
 
   for (const session of sessions) {
-    addDimension(modelMap, session.summary.model, session.summary.usage, session.summary.turns);
+    const sessionCost = emptyUsage();
+    const sessionModels = new Set<string>();
+    const weeklyUsage: UsageVector = { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 };
+    for (const event of session.activity) {
+      sessionModels.add(event.model);
+      const priced = pricedVector(event.usage, event.model);
+      addUsage(sessionCost, { ...event.usage, ...priced });
+      addDimension(modelMap, event.model, event.usage, 0, priced);
+      if (event.timestamp.slice(0, 10) >= weeklyStart) addVector(weeklyUsage, event.usage);
+    }
+    const missingTokens = Math.max(0, session.summary.usage.totalTokens - sessionCost.totalTokens);
+    sessionCost.unpricedTokens = (sessionCost.unpricedTokens ?? 0) + missingTokens;
+    if (missingTokens > 0) {
+      sessionModels.add(session.summary.model);
+      const unknownModel = modelMap.get(session.summary.model) ?? emptyUsage();
+      unknownModel.totalTokens += missingTokens;
+      unknownModel.unpricedTokens = (unknownModel.unpricedTokens ?? 0) + missingTokens;
+      modelMap.set(session.summary.model, unknownModel);
+    }
+    const pricedSession = { ...session.summary, estimatedCostUsd: sessionCost.estimatedCostUsd, unpricedTokens: sessionCost.unpricedTokens, ...(missingTokens > 0 ? {} : { weeklyUsage }), weeklyStart };
+    session.summary = pricedSession;
+    if (sessionModels.size === 0) sessionModels.add(session.summary.model);
+    for (const model of sessionModels) {
+      const modelBucket = modelMap.get(model) ?? emptyUsage();
+      modelBucket.sessions += 1;
+      modelMap.set(model, modelBucket);
+    }
+    for (const turn of session.turns) {
+      const modelBucket = modelMap.get(turn.model) ?? emptyUsage();
+      modelBucket.turns += 1;
+      modelMap.set(turn.model, modelBucket);
+    }
     if (session.summary.projectId) {
       const current = projectMap.get(session.summary.projectId) ?? {
         label: session.summary.projectLabel ?? "Unknown project",
         usage: emptyUsage(),
       };
-      addVectorToBreakdown(current.usage, session.summary.usage, session.summary.turns, 1);
+      addVectorToBreakdown(current.usage, session.summary.usage, session.summary.turns, 1, sessionCost);
       projectMap.set(session.summary.projectId, current);
     }
     for (const event of session.activity) {
       const day = event.timestamp.slice(0, 10);
       const bucket = dailyMap.get(day) ?? emptyUsage();
-      addVectorToBreakdown(bucket, event.usage, 0, 0);
+      addVectorToBreakdown(bucket, event.usage, 0, 0, pricedVector(event.usage, event.model));
       dailyMap.set(day, bucket);
     }
     for (const turn of session.turns) {
@@ -162,7 +195,10 @@ function buildSnapshot(sessions: ParsedSession[], options: SnapshotBuildOptions)
   const daily: DailyUsage[] = [...dailyMap.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([date, usage]) => ({ date, usage }));
-  const all = sessions.reduce((sum, session) => addVectorToBreakdown(sum, session.summary.usage, session.summary.turns, 1), emptyUsage());
+  const all = sessions.reduce((sum, session) => addVectorToBreakdown(sum, session.summary.usage, session.summary.turns, 1, {
+    estimatedCostUsd: session.summary.estimatedCostUsd ?? null,
+    unpricedTokens: session.summary.unpricedTokens ?? session.summary.usage.totalTokens,
+  }), emptyUsage());
   const periods = Object.fromEntries((["today", "week", "month", "7d", "30d"] as RangeKey[]).map((key) => [key, periodUsage(daily, key, now)])) as Record<RangeKey, UsageBreakdown>;
   for (const key of ["today", "week", "month", "7d", "30d"] as RangeKey[]) {
     const start = startForRange(key, now);
@@ -216,14 +252,32 @@ function startForRange(range: RangeKey, now: Date): Date {
   return start;
 }
 
-function addVectorToBreakdown(target: UsageBreakdown, usage: UsageVector, turns: number, sessions: number): UsageBreakdown {
-  return addUsage(target, { ...usage, turns, sessions });
+function addVectorToBreakdown(target: UsageBreakdown, usage: UsageVector, turns: number, sessions: number, cost: Pick<UsageBreakdown, "estimatedCostUsd" | "unpricedTokens">): UsageBreakdown {
+  return addUsage(target, { ...usage, turns, sessions, ...cost });
 }
 
-function addDimension(map: Map<string, UsageBreakdown>, key: string, usage: UsageVector, turns: number): void {
+function addDimension(map: Map<string, UsageBreakdown>, key: string, usage: UsageVector, turns: number, cost: Pick<UsageBreakdown, "estimatedCostUsd" | "unpricedTokens">): void {
   const current = map.get(key) ?? emptyUsage();
-  addVectorToBreakdown(current, usage, turns, 1);
+  addVectorToBreakdown(current, usage, turns, 0, cost);
   map.set(key, current);
+}
+
+function pricedVector(usage: UsageVector, model: string): Pick<UsageBreakdown, "estimatedCostUsd" | "unpricedTokens"> {
+  const estimatedCostUsd = estimateApiCostUsd(model, usage);
+  return { estimatedCostUsd, unpricedTokens: estimatedCostUsd === null ? usage.totalTokens : 0 };
+}
+
+function addVector(target: UsageVector, value: UsageVector): void {
+  target.inputTokens += value.inputTokens;
+  target.cachedInputTokens += value.cachedInputTokens;
+  target.cacheWriteTokens += value.cacheWriteTokens;
+  target.outputTokens += value.outputTokens;
+  target.reasoningTokens += value.reasoningTokens;
+  target.totalTokens += value.totalTokens;
+}
+
+function dateKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 function dimensionList(map: Map<string, UsageBreakdown>): DimensionUsage[] {

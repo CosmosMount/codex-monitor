@@ -7,3 +7,4 @@ export * from "./queue.js";
 export * from "./hub-sync.js";
 export * from "./lan-discovery.js";
 export * from "./model-checker.js";
+export * from "./pricing.js";

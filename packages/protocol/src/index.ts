@@ -15,6 +15,8 @@ export interface UsageBreakdown extends UsageVector {
   sessions: number;
   turns: number;
   estimatedCostUsd: number | null;
+  /** Tokens without a trustworthy API price (including older collector snapshots). */
+  unpricedTokens?: number;
 }
 
 export interface DailyUsage {
@@ -39,6 +41,12 @@ export interface SessionSummary {
   contextTokens: number | null;
   turns: number;
   usage: UsageVector;
+  /** API-equivalent estimate, never the Codex subscription charge. */
+  estimatedCostUsd?: number | null;
+  unpricedTokens?: number;
+  /** Calendar-week token activity, computed from cumulative counter deltas. */
+  weeklyUsage?: UsageVector;
+  weeklyStart?: string;
 }
 
 export interface CollectionHealth {
@@ -120,6 +128,7 @@ export const EMPTY_USAGE: UsageBreakdown = Object.freeze({
   sessions: 0,
   turns: 0,
   estimatedCostUsd: null,
+  unpricedTokens: 0,
 });
 
 export function emptyUsage(): UsageBreakdown {
@@ -138,6 +147,9 @@ export function addUsage(target: UsageBreakdown, value: Partial<UsageBreakdown>)
   if (value.estimatedCostUsd != null && Number.isFinite(value.estimatedCostUsd)) {
     target.estimatedCostUsd = (target.estimatedCostUsd ?? 0) + value.estimatedCostUsd;
   }
+  target.unpricedTokens = (target.unpricedTokens ?? 0) + (value.unpricedTokens === undefined
+    ? value.estimatedCostUsd == null ? finite(value.totalTokens) : 0
+    : finite(value.unpricedTokens));
   return target;
 }
 

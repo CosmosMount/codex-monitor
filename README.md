@@ -12,6 +12,7 @@ Codex Monitor is a local-first desktop application for inspecting Codex token us
 - Live model verification with strict requested/upstream identity comparison, latency, response status and token usage
 - Persistent model heartbeats with change-only desktop notifications
 - Dense token composition, rate-limit, yearly activity, session and per-device analytics
+- API-equivalent USD estimates and per-session share of observed weekly tokens
 - Compact Linear/Raycast-inspired desktop interface with light, dark and reduced-motion modes
 
 ## Development
@@ -90,6 +91,12 @@ Build and verify everything locally:
 pnpm verify
 pnpm --filter @codex-monitor/desktop dist
 ```
+
+## Cost and weekly share
+
+Overview and Usage show an **API-equivalent estimate** in USD. Sessions show a lifetime estimate plus this calendar week's token count and share of the same account's observed weekly tokens across synchronized devices. The estimate uses published standard text-token prices for recognized models, separates fresh/cached/cache-write input, and includes reasoning in the output rate. A `+` marks a partial estimate when some tokens have no known price; `—` means no reliable estimate is available. Long-context request pricing is approximated from log events. Tool fees, service-tier differences, taxes, and subscription charges are not included. This is **not** the user's actual ChatGPT/Codex bill.
+
+Weekly share is **not** a session's percentage of the official Codex weekly limit: token counts cannot be reliably converted to that limit. The rate-limit snapshot remains a separate account-level signal. Prices are maintained in `packages/core/src/pricing.ts` against the [OpenAI API pricing page](https://developers.openai.com/api/docs/pricing).
 
 ## Privacy
 
