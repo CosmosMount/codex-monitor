@@ -87,3 +87,10 @@ kbd { padding:2px 5px; border:1px solid var(--border); border-bottom-color:var(-
 .models-layout .spec strong{font-size:11px;font-weight:500;letter-spacing:-.01em}
 .models-layout .spec span{font-size:10px}
 .models-layout .result-banner strong,.models-layout .monitor-config h3{font-weight:600}
+
+/* Keep usage dimensions readable at any window width: stack panels before they
+   become cramped, then let each table scroll rather than clip its last column. */
+.split-panels{grid-template-columns:repeat(auto-fit,minmax(min(100%,750px),1fr))}
+.analytics-row{min-width:700px;grid-template-columns:minmax(160px,1fr) repeat(5,86px)}
+.analytics-row .primary-cell>svg{flex:none}
+.analytics-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
