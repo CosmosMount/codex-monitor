@@ -3,12 +3,13 @@ import ReactECharts from "echarts-for-react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   Activity, ArrowDownToLine, ArrowUpFromLine, Boxes, Brain, Check, ChevronRight,
-  CircleGauge, Clock3, Command, Cpu, Database, Gauge, HardDrive, Laptop, Layers3,
+  CircleGauge, Clock3, Cpu, Database, Gauge, HardDrive, Laptop, Layers3,
   Moon, Pencil, Play, RefreshCw, Search, Server, Settings, ShieldCheck, Sparkles, Sun, Terminal,
   Timer, Trash2, Wifi, X, Zap,
 } from "lucide-react";
 import { emptyUsage, type DimensionUsage, type FleetSnapshot, type RangeKey, type UsageBreakdown } from "@codex-monitor/protocol";
 import type { ModelCatalogEntry, ModelCheckerState, ModelCheckResult } from "@codex-monitor/core";
+import brandIcon from "../../../build/icon.png";
 
 type Page = "overview" | "usage" | "sessions" | "devices" | "models" | "settings";
 type Theme = "system" | "dark" | "light";
@@ -70,7 +71,7 @@ export function App(): ReactNode {
   const content = snapshot ?? emptyFleet();
   return <div className="app-shell">
     <aside className="sidebar">
-      <div className="brand"><div className="brand-mark"><Command size={16} /></div><span>Codex Monitor</span></div>
+      <div className="brand"><img className="brand-mark" src={brandIcon} alt="" /><span>Codex Monitor</span></div>
       <nav className="nav-list" aria-label="Primary navigation">
         {NAVIGATION.map((item) => <button key={item.id} className={page === item.id ? "nav-item active" : "nav-item"} onClick={() => setPage(item.id)}>
           <item.icon size={16} /><span>{item.label}</span>{item.id === "devices" && content.devices.length > 0 && <span className="nav-count">{content.devices.length}</span>}

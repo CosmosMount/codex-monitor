@@ -37,6 +37,7 @@ export class CodexCollector {
   private sequence: number;
   private listeners = new Set<(snapshot: DeviceSnapshot) => void>();
   private refreshTimer: NodeJS.Timeout | null = null;
+  private scanInFlight: Promise<DeviceSnapshot> | null = null;
 
   constructor(private readonly options: CollectorOptions = {}) {
     const root = options.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), ".codex");
@@ -46,7 +47,12 @@ export class CodexCollector {
     this.sequence = options.sequence ?? 0;
   }
 
-  async scan(): Promise<DeviceSnapshot> {
+  scan(): Promise<DeviceSnapshot> {
+    this.scanInFlight ??= this.scanOnce().finally(() => { this.scanInFlight = null; });
+    return this.scanInFlight;
+  }
+
+  private async scanOnce(): Promise<DeviceSnapshot> {
     const roots = [...this.roots, ...await this.discoveredRoots];
     const files: string[] = [];
     for (const root of roots) files.push(...await findJsonl(root));
@@ -92,6 +98,12 @@ export class CodexCollector {
     this.watcher.on("add", () => this.scheduleRefresh());
     this.watcher.on("change", () => this.scheduleRefresh());
     this.watcher.on("unlink", () => this.scheduleRefresh());
+    // Windows can report transient access errors while Codex rotates session files.
+    // Without an error listener, EventEmitter treats these as fatal exceptions.
+    this.watcher.on("error", (error) => {
+      console.error("Codex session watcher error:", error);
+      this.scheduleRefresh();
+    });
   }
 
   onSnapshot(listener: (snapshot: DeviceSnapshot) => void): () => void {
@@ -103,6 +115,7 @@ export class CodexCollector {
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     await this.watcher?.close();
     this.watcher = null;
+    await this.scanInFlight?.catch(() => undefined);
   }
 
   private scheduleRefresh(): void {

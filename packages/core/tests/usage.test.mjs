@@ -22,6 +22,16 @@ test("unknown prices remain visibly partial through aggregation", () => {
   assert.equal(total.unpricedTokens, 50);
 });
 
+test("concurrent collector refreshes share one scan and preserve sequence order", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "codex-monitor-scan-"));
+  t.after(async () => rm(root, { recursive: true, force: true }));
+  const collector = new CodexCollector({ codexHome: root });
+  const [first, concurrent] = await Promise.all([collector.scan(), collector.scan()]);
+  assert.equal(first.sequence, concurrent.sequence);
+  assert.equal((await collector.scan()).sequence, first.sequence + 1);
+  await collector.close();
+});
+
 test("collector keeps cross-week session share and cost stable across rescan/archive", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "codex-monitor-usage-"));
   assert.ok(resolve(root).startsWith(resolve(tmpdir()) + sep));

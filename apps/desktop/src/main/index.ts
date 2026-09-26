@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, net, Notification, safeStorage, session, shell, Tray } from "electron";
 import { aggregateFleet, CODEX_DESKTOP_USER_AGENT, CodexCollector, discoverCodexModels, discoverLanHubs, HubSyncClient, SnapshotQueue, startLanHubAdvertiser, testCodexModel, UsageArchive, type DiscoveredHub, type HubSyncStatus, type LanHubAdvertiser, type ModelCheckResult, type ModelCheckerState } from "@codex-monitor/core";
 import { createHub } from "@codex-monitor/hub";
@@ -24,7 +24,16 @@ let lanAdvertiser: LanHubAdvertiser | null = null;
 let discoveryTimer: NodeJS.Timeout | null = null;
 let syncRestartGeneration = 0;
 let launchAtLogin = false;
+let shutdownComplete = false;
+const runningMonitors = new Set<string>();
+const pendingPublishes = new Set<Promise<void>>();
 const startHidden = process.argv.includes("--hidden");
+
+function reportBackgroundError(context: string, error: unknown): void {
+  const message = error instanceof Error ? error.stack ?? error.message : String(error);
+  console.error(`${context}:`, error);
+  void appendFile(join(app.getPath("userData"), "monitor-errors.log"), `${new Date().toISOString()} ${context}: ${message}\n`).catch(() => undefined);
+}
 
 type SyncMode = "local" | "client" | "host";
 interface SyncSettings { mode: SyncMode; hubUrl: string; autoDiscover: boolean; port: number; encryptedSecret: string | null }
@@ -54,6 +63,12 @@ async function publishSnapshot(snapshot: DeviceSnapshot): Promise<void> {
     return;
   }
   await syncClient?.push(snapshot).catch(() => undefined);
+}
+
+function publishInBackground(snapshot: DeviceSnapshot): void {
+  const pending = publishSnapshot(snapshot);
+  pendingPublishes.add(pending);
+  void pending.catch((error) => reportBackgroundError("Snapshot upload", error)).finally(() => pendingPublishes.delete(pending));
 }
 
 function publicSettings(): object {
@@ -418,16 +433,22 @@ async function runModelCheck(model: string): Promise<ModelCheckResult> {
 }
 
 async function executeMonitor(monitor: ModelMonitor): Promise<void> {
-  const previous = monitor.lastResult?.status;
-  monitor.lastResult = await runModelCheck(monitor.model);
-  monitor.nextRunAt = new Date(Date.now() + monitor.intervalSeconds * 1_000).toISOString();
-  await saveModelMonitors();
-  if (previous && previous !== monitor.lastResult.status) {
-    const recovered = monitor.lastResult.status === "healthy";
-    new Notification({
-      title: recovered ? "Codex 模型已恢复" : "Codex 模型检查异常",
-      body: recovered ? `${monitor.model} 已恢复正常响应` : `${monitor.model}: ${monitor.lastResult.error ?? `上游返回 ${monitor.lastResult.upstreamModel}`}`,
-    }).show();
+  if (runningMonitors.has(monitor.id) || shuttingDown) return;
+  runningMonitors.add(monitor.id);
+  try {
+    const previous = monitor.lastResult?.status;
+    monitor.lastResult = await runModelCheck(monitor.model);
+    monitor.nextRunAt = new Date(Date.now() + monitor.intervalSeconds * 1_000).toISOString();
+    await saveModelMonitors();
+    if (previous && previous !== monitor.lastResult.status && Notification.isSupported()) {
+      const recovered = monitor.lastResult.status === "healthy";
+      new Notification({
+        title: recovered ? "Codex 模型已恢复" : "Codex 模型检查异常",
+        body: recovered ? `${monitor.model} 已恢复正常响应` : `${monitor.model}: ${monitor.lastResult.error ?? `上游返回 ${monitor.lastResult.upstreamModel}`}`,
+      }).show();
+    }
+  } finally {
+    runningMonitors.delete(monitor.id);
   }
 }
 
@@ -450,7 +471,12 @@ function startModelMonitorLoop(): void {
   monitorTimer = setInterval(() => {
     const now = Date.now();
     for (const monitor of modelMonitors) {
-      if (monitor.enabled && Date.parse(monitor.nextRunAt) <= now) void executeMonitor(monitor);
+      if (monitor.enabled && Date.parse(monitor.nextRunAt) <= now) {
+        void executeMonitor(monitor).catch((error) => {
+          monitor.nextRunAt = new Date(Date.now() + monitor.intervalSeconds * 1_000).toISOString();
+          reportBackgroundError("Scheduled model check", error);
+        });
+      }
     }
   }, 30_000);
 }
@@ -473,7 +499,7 @@ app.whenReady().then(async () => {
   globalShortcut.register("CommandOrControl+Shift+U", () => mainWindow?.isVisible() ? mainWindow.hide() : mainWindow?.show());
   collector.onSnapshot((snapshot) => {
     latestSnapshot = archive?.merge(snapshot) ?? snapshot;
-    void publishSnapshot(latestSnapshot);
+    publishInBackground(latestSnapshot);
     mainWindow?.webContents.send("monitor:updated", fleet());
   });
   await collector.watch();
@@ -482,25 +508,37 @@ app.whenReady().then(async () => {
   mainWindow?.webContents.send("monitor:updated", fleet());
   await restartSync();
   startModelMonitorLoop();
+}).catch((error) => {
+  reportBackgroundError("Desktop startup", error);
+  app.quit();
 });
 
 app.on("activate", () => {
   if (!mainWindow) createWindow();
   else mainWindow.show();
 });
-app.on("before-quit", () => { shuttingDown = true; });
-app.on("will-quit", () => {
+app.on("before-quit", (event) => {
+  if (shutdownComplete) return;
+  event.preventDefault();
   shuttingDown = true;
-  globalShortcut.unregisterAll();
   if (monitorTimer) clearInterval(monitorTimer);
   if (discoveryTimer) clearTimeout(discoveryTimer);
-  syncClient?.stop();
-  void lanAdvertiser?.close();
-  void hostedHub?.app.close();
-  void collector?.close();
-  archive?.close();
-  uploadQueue?.close();
+  void (async () => {
+    await collector?.close();
+    await Promise.allSettled([...pendingPublishes]);
+    await stopSyncResources();
+    archive?.close();
+    uploadQueue?.close();
+  })().catch((error) => reportBackgroundError("Desktop shutdown", error)).finally(() => {
+    shutdownComplete = true;
+    app.quit();
+  });
 });
+app.on("will-quit", () => globalShortcut.unregisterAll());
+app.on("render-process-gone", (_event, _webContents, details) => {
+  reportBackgroundError("Renderer process exited", `${details.reason} (exit code ${details.exitCode})`);
+});
+process.on("uncaughtExceptionMonitor", (error) => reportBackgroundError("Uncaught main-process exception", error));
 app.on("window-all-closed", () => {
   // Keep the collector and model heartbeats alive in the system tray.
 });
